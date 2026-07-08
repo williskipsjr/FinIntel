@@ -238,3 +238,14 @@ build/
 *.seed
 *.pid
 *.pid.lock
+
+# ==========================================================
+# Ignored Project Documentation
+# ==========================================================
+/API_CONTRACT.md
+/API_CONTRACTS.md
+/BACKEND_GAP_ANALYSIS_AND_ROADMAP.md
+/documentation.md
+
+
+
