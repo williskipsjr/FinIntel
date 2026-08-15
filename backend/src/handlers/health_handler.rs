@@ -1,8 +1,8 @@
-use axum::Json;
+use axum::{extract::State, Json};
 use serde_json::{json, Value};
 
-use crate::config::services::SERVICES;
 use crate::services::service_checker::check_service;
+use crate::state::AppState;
 
 pub async fn health() -> Json<Value> {
     Json(json!({
@@ -11,84 +11,78 @@ pub async fn health() -> Json<Value> {
     }))
 }
 
-pub async fn test_ocr() -> Json<Value> {
-    match reqwest::get(
-        format!("{}/health", SERVICES.ocr)
-    )
-    .await
-    {
+pub async fn test_ocr(State(state): State<AppState>) -> Json<Value> {
+    match reqwest::get(format!("{}/health", state.services.ocr)).await {
         Ok(response) => {
-            let body: Value =
-                response.json().await.unwrap();
-
+            let body: Value = response.json().await.unwrap_or_else(|_| json!({}));
             Json(json!({
-                "backend_status":"success",
+                "backend_status": "success",
                 "ocr_response": body
             }))
         }
-
         Err(err) => {
             Json(json!({
-                "backend_status":"error",
+                "backend_status": "error",
                 "message": err.to_string()
             }))
         }
     }
 }
 
-pub async fn services_health() -> Json<Value> {
-
+pub async fn services_health(State(state): State<AppState>) -> Json<Value> {
+    let s = &state.services;
     let (
         ocr,
         standardize,
         entity,
+        validation,
+        graph,
         anomaly,
         temporal,
-        graph_ml,
-        explainer,
+        trail,
+        report,
     ) = tokio::join!(
-        check_service(SERVICES.ocr),
-        check_service(SERVICES.standardize),
-        check_service(SERVICES.entity),
-        check_service(SERVICES.anomaly),
-        check_service(SERVICES.temporal),
-        check_service(SERVICES.graph_ml),
-        check_service(SERVICES.explainer),
+        check_service(&s.ocr),
+        check_service(&s.standardize),
+        check_service(&s.entity),
+        check_service(&s.validation),
+        check_service(&s.graph),
+        check_service(&s.anomaly),
+        check_service(&s.temporal),
+        check_service(&s.trail),
+        check_service(&s.report),
     );
 
     let all_healthy = [
         &ocr,
         &standardize,
         &entity,
+        &validation,
+        &graph,
         &anomaly,
         &temporal,
-        &graph_ml,
-        &explainer,
+        &trail,
+        &report,
     ]
     .iter()
     .all(|s| s["status"] == "healthy");
 
     Json(json!({
-        "system_status":
-            if all_healthy {
-                "healthy"
-            } else {
-                "degraded"
-            },
-
+        "system_status": if all_healthy { "healthy" } else { "degraded" },
         "backend": {
-            "service":"finintel-backend",
-            "status":"healthy"
+            "service": "finintel-backend",
+            "status": "healthy"
         },
-
         "services": {
             "ocr": ocr,
             "standardize": standardize,
             "entity": entity,
+            "validation": validation,
+            "graph": graph,
             "anomaly": anomaly,
             "temporal": temporal,
-            "graph_ml": graph_ml,
-            "explainer": explainer
+            "trail": trail,
+            "report": report
         }
     }))
 }

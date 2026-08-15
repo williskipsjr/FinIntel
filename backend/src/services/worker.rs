@@ -8,6 +8,7 @@ use sqlx::PgPool;
 use tokio::sync::mpsc::Receiver;
 
 use crate::{
+    config::service_config::ServiceConfig,
     models::{
         entity::CanonicalEntity,
         statement::ProcessingJob,
@@ -17,21 +18,17 @@ use crate::{
     services::{entity_service::save_entities, transaction_service::save_transactions},
 };
 
-// service URLs (kept local to the pipeline; the API gateway uses ServiceConfig)
-const OCR: &str = "http://localhost:8001/extract";
-const STANDARDIZE: &str = "http://localhost:8002/standardize";
-const VALIDATE: &str = "http://localhost:8004/validate";
-const ENTITY: &str = "http://localhost:8003/resolve";
-// refresh=true forces a whole-network recompute (never serves a stale cache).
-const GRAPH_ANALYZE: &str = "http://localhost:8005/flow/analyze/all?refresh=true";
-
-pub async fn start_worker(mut receiver: Receiver<ProcessingJob>, db: PgPool) {
+pub async fn start_worker(
+    mut receiver: Receiver<ProcessingJob>,
+    db: PgPool,
+    services: ServiceConfig,
+) {
     let client = Client::new();
 
     while let Some(job) = receiver.recv().await {
         println!("\nProcessing statement: {}", job.statement_id);
 
-        match process_job(&client, &db, &job).await {
+        match process_job(&client, &db, &services, &job).await {
             Ok(()) => {
                 update_job(&db, job.job_id, "completed", 100, "done", None).await;
                 let _ = update_statement_status(&db, job.statement_id, "completed").await;
@@ -49,6 +46,7 @@ pub async fn start_worker(mut receiver: Receiver<ProcessingJob>, db: PgPool) {
 async fn process_job(
     client: &Client,
     db: &PgPool,
+    services: &ServiceConfig,
     job: &ProcessingJob,
 ) -> Result<(), String> {
     update_job(db, job.job_id, "processing", 10, "ocr", None).await;
@@ -60,18 +58,23 @@ async fn process_job(
         .to_string();
 
     // 1. OCR / extraction
-    let ocr = post(client, OCR, &json!({ "file_path": abs_path })).await?;
+    let ocr =
+        post(client, &endpoint(&services.ocr, "/extract"), &json!({ "file_path": abs_path })).await?;
 
     // 2. standardize
     update_job(db, job.job_id, "processing", 30, "standardize", None).await;
-    let standardized =
-        post(client, STANDARDIZE, &json!({ "rows": ocr["rows"] })).await?;
+    let standardized = post(
+        client,
+        &endpoint(&services.standardize, "/standardize"),
+        &json!({ "rows": ocr["rows"] }),
+    )
+    .await?;
 
     // 3. validate
     update_job(db, job.job_id, "processing", 45, "validate", None).await;
     let validated = post(
         client,
-        VALIDATE,
+        &endpoint(&services.validation, "/validate"),
         &json!({ "transactions": standardized["transactions"] }),
     )
     .await?;
@@ -86,7 +89,7 @@ async fn process_job(
     update_job(db, job.job_id, "processing", 65, "entities", None).await;
     let entity_resp = post(
         client,
-        ENTITY,
+        &endpoint(&services.entity, "/resolve"),
         &json!({ "transactions": validated["transactions"] }),
     )
     .await?;
@@ -102,7 +105,8 @@ async fn process_job(
     if let Err(e) = crate::repositories::delete_repository::clear_analysis_cache(db).await {
         println!("Cache invalidation failed (non-fatal): {:?}", e);
     }
-    match get(client, GRAPH_ANALYZE).await {
+    let graph_analyze = endpoint(&services.graph, "/flow/analyze/all?refresh=true");
+    match get(client, &graph_analyze).await {
         Ok(g) => {
             let trips = g["round_trips"].as_array().map(|a| a.len()).unwrap_or(0);
             println!("Graph intelligence refreshed (round-trips: {})", trips);
@@ -111,20 +115,27 @@ async fn process_job(
     }
 
     // 7. raise investigator alerts for serious findings (best-effort)
-    generate_alerts(client, db, job.statement_id).await;
+    generate_alerts(client, db, services, job.statement_id).await;
 
     Ok(())
 }
 
 // Balanced-sensitivity alerting: HIGH/CRITICAL accounts + any round-trip in this
 // statement. Best-effort — an alerting hiccup never fails the ingestion job.
-const GRAPH_BASE: &str = "http://localhost:8005";
-
-async fn generate_alerts(client: &Client, db: &PgPool, statement_id: uuid::Uuid) {
+async fn generate_alerts(
+    client: &Client,
+    db: &PgPool,
+    services: &ServiceConfig,
+    statement_id: uuid::Uuid,
+) {
     use crate::repositories::alert_repository::insert_alert;
 
     // account-level HIGH/CRITICAL alerts
-    let risk_url = format!("{}/risk/top/statement/{}?limit=20", GRAPH_BASE, statement_id);
+    let risk_url = format!(
+        "{}/risk/top/statement/{}?limit=20",
+        services.graph.trim_end_matches('/'),
+        statement_id
+    );
     if let Ok(v) = get(client, &risk_url).await {
         if let Some(arr) = v["top_risks"].as_array() {
             for r in arr {
@@ -154,7 +165,11 @@ async fn generate_alerts(client: &Client, db: &PgPool, statement_id: uuid::Uuid)
     }
 
     // one summary alert if the statement contains circular money flow
-    let flow_url = format!("{}/flow/analyze/statement/{}", GRAPH_BASE, statement_id);
+    let flow_url = format!(
+        "{}/flow/analyze/statement/{}",
+        services.graph.trim_end_matches('/'),
+        statement_id
+    );
     if let Ok(v) = get(client, &flow_url).await {
         if let Some(rt) = v["round_trips"].as_array() {
             if !rt.is_empty() {
@@ -172,6 +187,10 @@ async fn generate_alerts(client: &Client, db: &PgPool, statement_id: uuid::Uuid)
             }
         }
     }
+}
+
+fn endpoint(base: &str, path: &str) -> String {
+    format!("{}{}", base.trim_end_matches('/'), path)
 }
 
 async fn post(client: &Client, url: &str, body: &Value) -> Result<Value, String> {

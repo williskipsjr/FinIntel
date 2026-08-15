@@ -130,11 +130,14 @@ async fn main() {
             RwLock::new(HashMap::new())
         );
 
+    let services = ServiceConfig::from_env();
+
     // Start background worker
     tokio::spawn(
         start_worker(
             job_receiver,
             db.clone(),
+            services.clone(),
         )
     );
 
@@ -146,7 +149,7 @@ async fn main() {
         http_client: reqwest::Client::new(),
         job_sender,
         job_status,
-        services: ServiceConfig::from_env(),
+        services,
     };
 
     // CORS so the frontend (different origin/port) can call the backend.
