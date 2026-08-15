@@ -1,0 +1,44 @@
+.git
+.gitignore
+.github
+.gemini
+.vscode
+.idea
+*.log
+
+# Caches and builds
+.pytest_cache
+.coverage
+htmlcov
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/target
+target
+**/node_modules
+node_modules
+**/dist
+dist
+
+# Large datasets, documentation, and external assets
+datasets
+docs
+graph-db
+*.md
+!README.md
+
+# Storage and runtime exports
+storage
+uploads
+reports
+exports
+generated_reports
+investigation_reports
+docker-data
+docker-volumes
+
+# Environment files
+.env
+.env.*
+!.env.example
