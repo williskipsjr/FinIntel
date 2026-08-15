@@ -126,7 +126,7 @@ The product is built to be **visual-first**: badges over raw numbers, colour-cod
 ## Repository Structure
 
 ```
-Bank_Hackathon/
+FinIntel/
 ├── backend/                # Rust Axum API gateway
 │   ├── src/                #   handlers, routes, repositories, services, models
 │   ├── migrations/         #   sqlx SQL migrations (run automatically on startup)
@@ -175,7 +175,7 @@ Install these before you start:
 
 ```bash
 git clone <your-repo-url>
-cd Bank_Hackathon
+cd AI-Powered-Financial-Crime-Investigation-Platform
 ```
 
 ### 2. Start PostgreSQL
