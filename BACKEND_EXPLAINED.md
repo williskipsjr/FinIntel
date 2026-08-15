@@ -1,8 +1,8 @@
 # FinIntel Backend — Complete Technical Walkthrough
 
-> A judge-ready explainer for the entire backend: architecture, every microservice,
+> An in-depth technical walkthrough of the entire backend: architecture, every microservice,
 > the algorithms behind each detection technique, the data model, and the
-> reasoning behind key design decisions. Written so any team member can present
+> reasoning behind key design decisions. Written so any team member or security auditor can understand
 > this end-to-end without needing to re-read the code.
 
 ---
@@ -158,7 +158,7 @@ text layer."
    fixed a class of bug where a scanned statement would 422 the standardize
    service because it received raw text instead of rows.
 
-**Key insight for judges:** OCR here isn't "throw the PDF at Tesseract and
+**Key architectural insight:** OCR here isn't "throw the PDF at Tesseract and
 hope." It's a layered pipeline — table structure detection, row grouping
 across wrapped lines, and transaction merging (a single logical transaction
 that OCR split across two lines gets stitched back together) — before
@@ -280,7 +280,7 @@ Handles **two shapes of data**:
   `last_date` between the same two nodes across the whole scope. Node type is
   auto-classified (`UPI_ID`, `CASH`, `ACCOUNT`, or generic `ENTITY`).
 
-**Why this matters:** most hackathon graph-analysis implementations only work
+**Why this matters:** traditional graph-analysis implementations often only work
 on multi-party ledgers with explicit sender/receiver columns. Real Indian bank
 statement exports are almost always single-account — this engine is what
 makes round-trip and money-flow detection *possible* on the actual dataset,
@@ -465,7 +465,7 @@ drives the live pipeline visualization on the frontend.
 | `jobs` | id, statement_id FK, status, progress, stage, error | statement |
 | `analysis_cache` | (scope, kind) PK, payload JSONB, computed_at | `scope` = "all" or a statement UUID; `kind` = analyze/risk/report |
 
-The single most important structural fact for judges: **`transactions` and
+The single most important structural fact: **`transactions` and
 `jobs` are statement-scoped by foreign key; `entities` and `risk_profiles` are
 deliberately global** (an identifier like a UPI ID is the same real-world
 entity no matter which statement it was seen in). Any feature that needs
@@ -475,7 +475,7 @@ is exactly the root cause behind one of the scoping bugs fixed in this pass.
 
 ---
 
-## 6. Two Design Choices Worth Highlighting to Judges
+## 6. Two Key Architecture Decisions
 
 ### 6.1 Why the graph is stateless (no persistent Neo4j dependency)
 Early code paths reference Neo4j (`neo4j_client.py`, `graph_builder.py`,
@@ -547,7 +547,7 @@ with a clear upgrade path if richer prose is wanted.
 
 ---
 
-## 9. Recent Correctness Fixes (useful if judges probe on robustness)
+## 9. Recent Correctness & Robustness Fixes
 
 This backend was audited and hardened for exactly the class of bug that
 matters most in a multi-tenant/multi-statement investigation tool: **scope
@@ -576,7 +576,7 @@ leakage and stale aggregates.**
 
 ---
 
-## 10. Anticipated Judge Questions & Answers
+## 10. Frequently Asked Technical Questions & Architecture Deep-Dive
 
 **Q: How do you handle a bank statement format you've never seen before?**
 A: The standardize service doesn't hardcode bank templates — it scores every

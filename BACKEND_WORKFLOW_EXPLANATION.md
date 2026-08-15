@@ -1,13 +1,13 @@
 # FinIntel V2 — Core Backend Architecture & Workflow Explanation
 
-This document provides a comprehensive, deep-dive explanation of the **FinIntel V2** backend architecture and data processing pipeline. It is written to equip the authors with the technical arguments, under-the-hood algorithms, and design justifications necessary to deliver a **winning explanation to hackathon judges**.
+This document provides a comprehensive, deep-dive explanation of the **FinIntel V2** backend architecture and data processing pipeline. It is written to equip engineers and forensic investigators with the technical specifications, under-the-hood algorithms, and design justifications powering the platform.
 
 ---
 
 ## 1. Executive Summary & Problem Statement
 
-### The Hackathon Challenge
-Financial crime investigators face a massive hurdle: bank statements come from different banks, in different file formats (PDFs, scanned PDFs, Excel, CSV, plain TXT), with completely different column names, layouts, and data structures. For this hackathon, we were challenged to parse, standardize, clean, analyze, and report on **162 distinct real-world evaluation files** spanning diverse layouts and structures.
+### The Financial Cybercrime Investigation Challenge
+Financial crime investigators face a massive hurdle: bank statements come from different banks, in different file formats (PDFs, scanned PDFs, Excel, CSV, plain TXT), with completely different column names, layouts, and data structures. FinIntel is built to parse, standardize, clean, analyze, and report on diverse real-world financial ledgers and evaluation datasets spanning complex layouts and structures.
 
 ### Traditional Failures (Why we built FinIntel V2)
 1. **Layout Fragility:** Traditional parsing uses hardcoded rules or regular expressions for each bank. A single change in a column header (e.g., `Tran Date` vs. `Txn Date`) crashes the pipeline.
@@ -99,200 +99,153 @@ When a user uploads a bank statement, the backend processes it asynchronously th
 3. Standardization      --> Resolves columns dynamically; normalizes dirty currency/amount formats.
        | (Standardized transactions)
        v
-4. Cleaning & Validation--> Scans for duplicates, debit-credit reversal pairs, and balance mismatches.
-       | (Validated transactions)
+4. Validation           --> Cross-validates running balance equations, flags duplicates/reversals.
+       | (Enriched transactions)
        v
-5. Entity Resolution    --> Extracts identifiers (UPI, Accounts); groups names via Cosine Similarity.
-       | (Resolved canonical entities)
-       v
-6. Graph Analytics      --> Builds directed flow; detects loops (Johnson DFS); maps communities.
-       | (Weakly-connected components, cycles, centralities)
-       v
-7. Statistical Anomaly  --> Fits Isolation Forest to detect statistical outliers.
-       | (Normalized anomaly score)
-       v
-8. Temporal Analysis    --> Checks burst activity, daily velocity, and PAN cash-structuring (45k-50k).
-       | (Structuring flags, burst scores)
-       v
-9. FIFO Money Trail     --> Tracks credit lots and matches subsequent debits to find final destinations.
-       | (FIFO trail trees)
-       v
-10. Risk Fusion         --> Fuses all weights; persists standard transactions and risk profiles in PostgreSQL.
+5. Database Ingestion   --> Saves canonical transactions & statements to PostgreSQL.
        |
        v
-[Job Completed]         --> Updates job progress to 100%. Report is cached and ready for Excel/PDF download.
+6. Entity Resolution    --> Extracts counterparty accounts/UPINs, resolves fuzzy aliases.
+       |
+       v
+7. Graph Analytics      --> Builds perspective-aware in-memory directed graphs.
+       |                 - Cycle Detection (Circular money flows / round-tripping)
+       |                 - Layering Pass-Through Ratios & Fan-In / Fan-Out Hubs
+       |                 - Weakly-Connected Components (WCC sub-networks)
+       v
+8. ML Anomaly Detection --> Isolation Forest flags statistically anomalous amounts/volumes.
+       |
+       v
+9. Temporal Analysis    --> Z-Score detectors flag burst spikes, velocity changes & PAN structuring.
+       |
+       v
+10. FIFO Money Trail    --> Matches credit inflows to debit outflows in strict FIFO chronological order.
+       |
+       v
+11. Report Generator    --> Compiles final court-admissible PDF, Excel, and Word exports.
 ```
 
 ---
 
-## 4. Service-by-Service Technical Deep Dive
+## 4. Deep-Dive: Microservice Subsystems & Algorithms
 
-### 1. Rust Axum Gateway (`backend/`)
-* **Role:** Entry point, API router, asynchronous job orchestrator, database persistence layer, and cached analysis store.
-* **Under the Hood:**
-  * Uses a Tokio `mpsc` channel to queue jobs. A dedicated background worker thread pulls tasks and drives the Python pipeline.
-  * Handles database persistence using `sqlx` against PostgreSQL. It splits records into `statements`, `transactions`, `entities`, and `risk_profiles` tables.
-  * Implements a persistent cache table (`analysis_cache`) keyed by `(scope, kind)` to prevent recomputing complex graph and risk analytics for the same statement or case.
-  * Wraps responses in a uniform JSON envelope: `{ success: bool, data: T, error: Error, meta: Metadata }`.
+### 1. OCR & File Extraction Service (`ml-services/ocr/`)
+* **Role:** Parses heterogeneous PDF, Excel, CSV, DOCX, and scanned image statements.
+* **Extraction Strategy:**
+  * Uses `pdfplumber` to extract vector table lines and text boxes with bounding-box coordinate tracking.
+  * Falls back to `pdf2image` and `PaddleOCR` for scanned or noisy documents.
+  * **Table Reconstruction:** Groups bounding boxes by horizontal lines (`RowGrouper`) and aligns columns using dynamic gap detection (`TableReconstructor`).
 
-### 2. OCR & Extraction Service (`ml-services/ocr/`)
-* **Role:** Extracts raw rows of cells from spreadsheet layouts or text lines from PDFs.
-* **Table-First Parsing Strategy:**
-  1. Opens PDF files using `pdfplumber`. Attempts table boundary extraction (`page.extract_tables()`). If structured cells are found, it maps them directly and carries headers across pages for multi-page statements.
-  2. If no text or tables can be extracted, it flags the document as scanned (`ocr_required = true`).
-* **OCR Pipeline (PaddleOCR):**
-  * Converts PDF pages to high-resolution PNG images via `pdf2image.convert_from_path`.
-  * Runs **PaddleOCR** with angle classification enabled (`use_angle_cls=True, lang="en"`).
-  * Returns text lines, coordinate bounding boxes (`bbox`), and confidence scores for each string.
-* **Text Reconstruction:**
-  * If the extraction returned raw string lines (from text-based PDFs or OCR output), the `TextStatementReconstructor` groups text fragments horizontally and vertically based on coordinate boxes to reconstruct clean row arrays, preventing column misalignments.
+### 2. Standardization & Column Intelligence (`ml-services/standardize/`)
+* **Role:** Translates arbitrary column headers from any bank into standard canonical fields (`date`, `amount`, `debit_credit`, `balance`, `narration`, `reference_number`).
+* **Column Synonym Scorer:** Compares raw headers against a weighted vocabulary tree using string normalization, regex patterns, and fuzzy distance.
+* **Amount & Currency Sanitizer:** Cleans currency symbols (₹, $, €, £), thousands separators (commas, spaces), and European decimal formatting (`1.234,56` vs `1,234.56`).
 
-### 3. Universal Standardization Service (`ml-services/standardize/`)
-* **Role:** Resolves bank-agnostic columns and standardizes numerical values.
-* **Dynamic Column Intelligence (Scored synonym mapping):**
-  * Uses a precompiled dictionary of synonyms derived from the 162 real evaluation files (e.g., mapping `dr_amt`, `withdrawal`, and `debit` to a canonical `debit` field).
-  * Computes candidate matches. Instead of a simple regex check, it ranks matches by confidence weights:
-    $$\text{EXACT (Full match)} = 100 \implies \text{Confidence} = 0.99$$
-    $$\text{STRONG (Token search)} = 60 \implies \text{Confidence} = 0.85$$
-    $$\text{WEAK (Substring search)} = 30 \implies \text{Confidence} = 0.55$$
-  * Runs a **greedy match algorithm with a one-to-one constraint**: maps the highest scored column first, binds it, removes both from the pools, and continues. This prevents a general "Date" from overlapping with "Value Date".
-* **Amount Normalization:**
-  * Clean-up engine strips currency symbols (`₹`, `INR`, `Rs.`), spaces, and commas.
-  * Standardizes trailing signs (e.g., `500.00-`), parentheses (e.g., `(500.00)`), and Indian ledger suffixes (e.g., `1,250.00Cr` / `3,400.00Dr`).
-  * Resolves layout modes: split debit/credit columns vs. a single signed amount column (determining transfer direction by positive/negative signs or Cr/Dr labels).
+### 3. Validation & Balance Verification Service (`ml-services/validation/`)
+* **Role:** Mathematically audits the internal ledger consistency.
+* **Balance Formula:**
+  $$\text{Expected Balance}_i = \text{Balance}_{i-1} + \text{Credit}_i - \text{Debit}_i$$
+* **Duplicate Detection:** Hashes transaction tuples `(date, amount, narration, balance)` to flag exact duplicates and duplicate candidate warnings.
 
-### 4. Cleaning & Validation Service (`ml-services/validation/`)
-* **Role:** Cleans data, detects errors, and flags anomalies. Runs four core validation layers:
-  1. **Running Balance Invariant Validator:** Evaluates chronological ledger consistency:
-     $$\text{Balance}_{i} = \text{Balance}_{i-1} + \text{Credit}_{i} - \text{Debit}_{i}$$
-     If the equation is broken by more than $1.00$ (float tolerance), it flags a `balance_mismatch` and marks the transaction as invalid.
-  2. **Composite-Key Duplicate Detector:** Identifies exact ledger duplicates. To prevent false positives on genuine repeat payments (e.g., sending the same rent amount twice on the same day), it creates a composite key:
-     $$\text{Key} = \{ \text{Date}, \text{Amount}, \text{Direction}, \text{Reference}, \text{Narration}, \text{Running Balance} \}$$
-     Since repeated payments occur at different points in time, they land on different running balances. Only a truly duplicated database insert (matching balance too) is flagged.
-  3. **Failed / Reversal Transaction Detector:** Identifies failed transfers that were immediately credited back.
-     * **Reversal Pairs:** Searches for a debit of amount $A$, followed within a temporal window of 10 transactions by a credit of the same amount $A$. If found, both legs are flagged as failed.
-     * **Keyword Flags:** Filters narrations for reversal terms: `REVERSAL`, `REVERSED`, `REFUND`, `FAILED`, `RETURNED`, `CHARGEBACK`.
-  4. **Confidence Penalization:** Penalizes transaction confidence scores based on validation findings:
-     * Missing amount: $-0.40$ (invalidates row)
-     * Missing date: $-0.20$
-     * Balance mismatch: $-0.40$
-     * Duplicate: $-0.20$
+### 4. Entity Resolution Service (`ml-services/entity/`)
+* **Role:** Discovers counterparties and resolves entity aliases across transactions.
+* **Narration Parser:** Extracts UPI IDs, account numbers, IMPS/NEFT reference codes, and merchant tags from messy narration strings.
+* **Fuzzy Alias Matcher:** Uses cosine similarity over character n-grams to link related account nicknames and nominee entities.
 
-### 5. Entity Resolution Service (`ml-services/entity/`)
-* **Role:** Extracts entity mentions and clusters them to resolve identities across different statements.
-* **Deterministic Extractors:** Regex-based parsers extract structured fields:
-  * UPI Virtual Payment Addresses (e.g., `upi_id = string@bank`)
-  * IFSC codes (routing identifiers)
-  * Account numbers, telephone numbers, and bank names.
-* **Fuzzy Name Clustering (Sentence-Transformers):**
-  * Extends rules using a spaCy Named Entity Recognition (NER) model to find `PERSON`, `MERCHANT`, and `ORGANIZATION` tokens.
-  * Standardizes names (casing, spaces, special character removal).
-  * If the ML library is present, it uses `sentence-transformers` with the **`all-MiniLM-L6-v2`** model. It creates high-dimensional vector embeddings of the names and calculates **Cosine Similarity**:
-    $$\text{Similarity}(E_1, E_2) \ge 0.85 \implies \text{Group together under one Canonical Entity}$$
-  * Tracks minor spelling variants or transaction codes (e.g., `MOWAIS DOWAIS`, `M DOWAIS`) as `aliases` of the same canonical entity.
-
-### 6. Custom In-Memory Graph Analytics Service (`ml-services/graph/`)
-* **Role:** Analyzes money flows, detects communities, and maps loops.
-* **Perspective-Aware MoneyFlowEngine:**
-  * Converts single-account statements into a directed flow graph.
-  * If explicit sender/receiver account numbers are missing, it extracts the counterparty from the narration (using UPI IDs, merchant prefixes, ATM cash tags, or beneficiary tokens).
-  * Sets edge directions:
-    * `DEBIT`: statement holder (Source) $\to$ counterparty (Target)
-    * `CREDIT`: counterparty (Source) $\to$ statement holder (Target)
+### 5. In-Memory Graph Analytics Service (`ml-services/graph/`)
+* **Role:** Identifies complex financial crime patterns across accounts.
+* **Perspective-Aware Routing:**
+  * `DEBIT`: statement holder (Source) $\to$ counterparty (Target)
+  * `CREDIT`: counterparty (Source) $\to$ statement holder (Target)
 * **Cycle Detection (Johnson-style DFS):**
-  * Enumerates simple directed cycles to find loops where money leaves an account and returns to it.
-  * Uses the **"smallest node ID is the entry point"** rule to prevent double-counting cycles.
-  * **Innovation (Bottleneck ranking):** In dense graphs, cycle count can explode. The engine caps cycle generation at a `scan_limit` (5,000 cycles) to protect CPU memory. It then ranks cycles by the **bottleneck amount** (the minimum transfer size along any edge in the loop):
-    $$\text{Bottleneck Amount} = \min(e_1, e_2, \dots, e_k)$$
-    The top 200 cycles with the largest bottleneck amounts are returned, ensuring investigators see the loops carrying the most circular capital.
-* **Weakly-Connected Communities:**
-  * Uses **Union-Find** (disjoint-set data structure with path compression) to group accounts into isolated sub-networks of activity.
-* **Degree Centrality:**
-  * Measures centrality scores of nodes to find central hubs of coordination:
-    $$\text{Centrality}(v) = \frac{\text{in-degree}(v) + \text{out-degree}(v)}{N-1}$$
+  * Enumerates simple directed cycles to find circular money-laundering loops.
+  * Ranks cycles by **bottleneck amount** ($\min(e_1, e_2, \dots, e_k)$).
+* **Weakly-Connected Components:**
+  * Uses **Union-Find** to identify isolated sub-networks of coordinated criminal activity.
 
-### 7. Statistical Anomaly Service (`ml-services/anomaly/`)
-* **Role:** Identifies statistical outliers using unsupervised machine learning.
-* **Feature Building:** Computes transaction frequency, maximum amounts, and unique counterparties per account.
-* **Isolation Forest Model:**
-  * Fits an **`IsolationForest`** model (`n_estimators=200`, `contamination=0.05`, `random_state=42`) to detect outliers in the feature space.
-  * Outliers are flagged as `high_statistical_anomaly` (score in the 95th percentile) or `moderate_statistical_anomaly` (score in the 90th percentile).
+### 6. Statistical Anomaly Service (`ml-services/anomaly/`)
+* **Role:** Unsupervised outlier detection using **Isolation Forests** (`n_estimators=200`, `contamination=0.05`). Flags extreme transaction amounts and counterparty concentrations.
 
-### 8. Temporal Pattern Analysis Service (`ml-services/temporal/`)
-* **Role:** Scans the timeline of transactions for time-series anomalies.
-* **Burst Activity Detector:** Computes the transaction volume per account. Calculates Z-scores against the population mean:
-  $$\text{Z-Score} = \frac{X - \mu}{\sigma}$$
-  If the Z-score $> 2$, it flags a `burst_activity` spike.
-* **Daily Velocity Spike Detector:** Calculates daily aggregate amounts per account. Computes the average daily amount, Z-scores it across all accounts, and flags values $>2$ as a `velocity_spike`.
-* **KYC / PAN Structuring Detector:**
-  * Under Indian financial regulations, transactions of 50,000 INR or above trigger mandatory PAN-card verification and strict reporting.
-  * The Structuring Detector specifically scans for transaction amounts falling in the **$[45000, 50000)$** range. If an account has $\ge 3$ such transactions, it flags `structuring_detected`, pointing to intentional structuring (smurfing) to bypass regulatory controls.
+### 7. Temporal Pattern Analysis Service (`ml-services/temporal/`)
+* **Burst Activity Detector:** Z-score volume deviations ($Z > 2$) over sliding time windows.
+* **PAN / KYC Structuring Detector:** Identifies intentional smurfing by catching $\ge 3$ transactions structured between 45,000 and 50,000 INR.
 
-### 9. FIFO Money Trail Tracker (`ml-services/trail/`)
-* **Role:** Implements a First-In-First-Out trail matching algorithm.
-* **Spec Logic:**
-  * Every `CREDIT` received by an account creates a "credit lot" representing an inflow of funds.
-  * Every subsequent `DEBIT` from that account consumes funds from the oldest open credit lot(s) (FIFO queue).
-  * For each credit lot, the tracker traces which debits spent it, when they were spent, and the destination entity resolved from the narration:
-  
-  ```
-  [Credit Inflow] (Rs. 100,000 from Source A)
-        |
-        v
-    FIFO Queue
-        |
-        +---> [Debit Outflow 1] (Rs. 40,000 to Target X) -- Consumes Rs. 40,000 of Credit A
-        |
-        +---> [Debit Outflow 2] (Rs. 50,000 to Target Y) -- Consumes Rs. 50,000 of Credit A
-        |
-        +---> [Debit Outflow 3] (Rs. 30,000 to Target Z) -- Consumes Rs. 10,000 of Credit A (Fully consumed!)
-                                                         -- Remainder (Rs. 20,000) falls to next Credit Lot
-  ```
-  
-* **Reverse Lookup:**
-  * **Credit Trail (Forward):** Shows how a specific deposit was dispersed across subsequent payments.
-  * **Debit Funding (Backward):** Identifies which specific credit deposits funded a suspicious debit.
+### 8. FIFO Money Trail Tracker (`ml-services/trail/`)
+* **Role:** Chronological FIFO matching engine tracking fund provenance. Traces which specific credit deposit funded subsequent debit transfers (and vice versa).
 
-### 10. Risk Fusion Engine (Integrated)
-* **Role:** Fuses graph, transactional, and external ML signals into a single score.
-* **Renormalized Scoring Weights:**
-  
-  | Signal Source | Metric Description | Default Weight |
-  |---|---|---|
-  | **round_trip** | Membership in circular loops | **22%** |
-  | **layering** | Pass-through ratio ($1 - \frac{|In - Out|}{\max(In, Out)}$) | **18%** |
-  | **accumulation**| High concentration of inflows | **15%** |
-  | **fan_in** | Receiving from multiple distinct sources | **10%** |
-  | **fan_out** | Sending to multiple distinct destinations | **10%** |
-  | **anomaly** | Isolation Forest statistical anomaly score | **10%** |
-  | **temporal** | Burst / Velocity / Structuring anomalies | **8%** |
-  | **failed_ratio**| Portion of failed/reversed transactions | **4%** |
-  | **centrality** | Hub degree centrality in the component | **3%** |
-
-* **Auditability & Explainability:**
-  * Rather than generating a single number, the engine outputs a list of contributing factors. Each factor documents its weight, value, contribution, a human-readable explanation, and the raw evidence used (e.g., total received amount, sender count). This supports the frontend interface and provides full audit logs.
-
-### 11. Report Generator Service (`ml-services/report/`)
-* **Role:** Generates multi-format report exports for court submissions or audits.
-* **Outputs:**
-  * **Excel (openpyxl):** Multiple sheets documenting statement metadata, transactions, canonical entities, flagged risks, round trips, and FIFO trails.
-  * **PDF (ReportLab):** High-fidelity, publication-grade document with structural tables, case summaries, and risk factor charts.
-  * **Word (docx):** Formatted narrative report outlining the investigation timeline and findings.
-  * **JSON:** Raw structured schema for third-party system integrations.
+### 9. Multi-Format Report Service (`ml-services/report/`)
+* **Outputs:** Generates publication-grade investigation dossiers in **Excel (openpyxl)**, **PDF (ReportLab)**, **Word (docx)**, and **JSON**.
 
 ---
 
-## 5. Why This Architecture Wins Hackathons (Key Talking Points for Judges)
+## 5. Full-Stack Docker Deployment: From Manual Runs to 1-Click Orchestration
 
-If the judges ask about our design decisions, emphasize these five points:
+```mermaid
+graph TD
+    subgraph "Optimized Build Pipeline"
+        A[Scoped .dockerignore files] --> B[Fast Context Transfer < 5MB]
+        B --> C[Rust: Pre-Cached Cargo Layer]
+        B --> D[Python: Single finintel-ml-services Image]
+        B --> E[Frontend: Pre-Cached npm ci Layer]
+    end
+
+    subgraph "1-Click Runtime Orchestration (docker compose up -d)"
+        D --> ML1[ocr :8001]
+        D --> ML2[standardize :8002]
+        D --> ML3[entity :8003]
+        D --> ML4[validation :8004]
+        D --> ML5[graph :8005]
+        D --> ML6[anomaly :8007]
+        D --> ML7[temporal :8008]
+        D --> ML8[trail :8009]
+        D --> ML9[report :8010]
+        C --> BE[Rust Backend :8080]
+        E --> FE[Vite / React UI :3000]
+        PG[(PostgreSQL 16 :5432)] --> BE
+        PG --> ML5
+        NEO[(Neo4j 5 :7687)] --> ML5
+    end
+```
+
+### Why Docker Compose Replaced Manual Startup
+* **Previous Workflow (Manual):** Required opening **10+ separate terminal tabs** to manually start PostgreSQL, Neo4j, 9 individual Python uvicorn instances on separate ports, the Rust Axum backend via `cargo run`, and the Node frontend via `npm run dev`. This was error-prone, consumed large amounts of memory, and led to localhost port mismatches.
+* **Current Workflow (1-Click Docker Compose):** Running `docker compose up -d` boots all **13 containers** in deterministic dependency order:
+  1. **PostgreSQL & Neo4j** initialize with automatic idempotent schema migrations (`postgres-init`).
+  2. **Unified Python ML Base Image (`finintel-ml-services:latest`)** is built **once** and reused across all 9 microservices, eliminating duplicate package installations.
+  3. **Multi-Stage Rust Backend (`finintel-backend:latest`)** pre-caches 300+ Cargo dependencies for instantaneous rebuilds.
+  4. **Shared Volume (`statement_storage`)** allows the Rust Gateway and OCR service to exchange uploaded files directly in memory/disk.
+  5. **Automated Health Checks** monitor all services to ensure the entire network is fully healthy before traffic is routed.
+
+### Quick Start Guide
+
+```powershell
+# 1. Start the complete 13-service platform in the background
+docker compose up --build -d
+
+# 2. Check health status of all containers
+docker compose ps
+
+# 3. Verify complete system health via backend diagnostic endpoint
+curl http://localhost:8080/services/health
+```
+
+### Service Port Map
+* **Frontend UI:** `http://localhost:3000`
+* **Rust API Gateway:** `http://localhost:8080`
+* **Python Microservices:** `8001` (OCR), `8002` (Standardize), `8003` (Entity), `8004` (Validation), `8005` (Graph), `8007` (Anomaly), `8008` (Temporal), `8009` (Trail), `8010` (Report)
+* **Databases:** `5432` (PostgreSQL), `7474 / 7687` (Neo4j)
+
+---
+
+## 6. Core Architectural Advantages & Enterprise Capabilities
 
 1. **Production-Grade Reliability (No Panics):**
-   We replaced raw Rust unwraps (`.unwrap()`, `.expect()`) with a global `AppError` mapping. If an upload fails or contains corrupted data, the API returns a structured HTTP `400/415` error envelope. It does not crash the server.
-2. **True Generalization over 162 Layouts:**
-   Instead of writing hardcoded parser rules for each bank statement format, our data-driven `Column Intelligence` synonym resolver mapped every column automatically. We achieved a near-zero layout failure rate across a highly heterogeneous dataset.
+   Replaced raw Rust unwraps with a unified `AppError` mapping. Corrupted uploads return structured HTTP error envelopes without server crashes.
+2. **True Generalization over Heterogeneous Layouts:**
+   Instead of writing brittle per-bank heuristics, our data-driven `Column Intelligence` synonym resolver maps every column dynamically across unseen formats.
 3. **Deterministic, Cost-Effective Analysis (No LLM Lag):**
-   By avoiding external LLM APIs for core processing, our platform executes in milliseconds, costs nothing to run, operates offline, and guarantees reproducible results. It is fully compliant with legal audit trails where hallucinated data is unacceptable.
+   By avoiding external LLM APIs for core processing, our platform executes in milliseconds, costs nothing to run, operates completely offline, and guarantees legally reproducible results.
 4. **Resilient Background Execution:**
-   Statement parsing is slow due to OCR and file parsing. By building a database-backed async job queue, we decoupled file uploads from request threads. Progress is tracked from `0` to `100%` (`queued -> processing -> completed | failed`). If the backend restarts, the job state is preserved in PostgreSQL.
-5. **Fuzzy Entity Matching at the Edge:**
-   Our hybrid pipeline resolves entity aliases (matching common typos or transaction codes) using semantic embeddings (`all-MiniLM-L6-v2`) and cosine similarity thresholds, ensuring that transaction networks are mapped accurately.
+   Statement parsing is decoupled into an asynchronous database-backed job queue (`0-100%` progress tracking) preserved across restarts.
+5. **1-Click Full-Stack Production Orchestration:**
+   The entire hybrid polyglot architecture (Rust + 9 Python microservices + Postgres + Neo4j + Vite) deploys in a single command with built-in health monitoring and zero setup friction.
