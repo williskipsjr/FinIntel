@@ -568,9 +568,21 @@ def explain_account_endpoint(account: str, include_external: bool = True):
     return expl.explain_account(profile, eng, account)
 
 
+def _engine_for_scope(case_id: str):
+    """Same scoping rule as every other endpoint: "all"/unset = whole
+    network, anything else = that statement only. Cycle ids are only stable
+    *within* a scope, so explaining a chain_id requires rebuilding the exact
+    same scope the caller's round-trip list came from — mixing scopes here
+    was the root cause of round-trip explanations pointing at the wrong
+    (unrelated, whole-network) cycle when viewing a single statement."""
+    if case_id and case_id != "all":
+        return _engine_from_rows(_loader.load_statement_transactions(case_id))
+    return _engine_from_rows(_loader.load_all_transactions())
+
+
 @app.get("/explain/round-trips")
-def explain_round_trips_list():
-    eng = _engine_from_rows(_loader.load_all_transactions())
+def explain_round_trips_list(case_id: str = "all"):
+    eng = _engine_for_scope(case_id)
     cycles = fa.detect_round_trips(eng)
     return {"count": len(cycles),
             "round_trips": [
@@ -580,8 +592,8 @@ def explain_round_trips_list():
 
 
 @app.get("/explain/round-trip/{chain_id}")
-def explain_round_trip_endpoint(chain_id: int):
-    eng = _engine_from_rows(_loader.load_all_transactions())
+def explain_round_trip_endpoint(chain_id: int, case_id: str = "all"):
+    eng = _engine_for_scope(case_id)
     cycles = fa.detect_round_trips(eng)
     cycle = next((c for c in cycles if c["id"] == chain_id), None)
     if cycle is None:

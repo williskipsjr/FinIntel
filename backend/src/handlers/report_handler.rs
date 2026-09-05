@@ -1,11 +1,19 @@
 use axum::{
     body::Body,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::header,
     response::{IntoResponse, Response},
     Json,
 };
+use serde::Deserialize;
 use serde_json::{json, Value};
+
+#[derive(Debug, Deserialize)]
+pub struct ServiceReportQuery {
+    /// Selective export target: a credit transaction id (money-trail) or a
+    /// round-trip chain id (round-trips). Absent = full per-service report.
+    pub focus: Option<String>,
+}
 
 use crate::{
     api::{ApiResponse, ApiResult, AppError},
@@ -103,19 +111,25 @@ pub async fn report_pdf(
 pub async fn service_report(
     State(state): State<AppState>,
     Path((case_id, service, fmt)): Path<(String, String, String)>,
+    Query(q): Query<ServiceReportQuery>,
 ) -> Result<Response, AppError> {
+    let focus_qs = match q.focus.as_deref() {
+        Some(f) if !f.is_empty() => format!("?focus={}", enc(f)),
+        _ => String::new(),
+    };
+
     if fmt == "json" {
         let url = format!(
-            "{}/report/{}/service/{}/json",
-            state.services.report, case_id, service
+            "{}/report/{}/service/{}/json{}",
+            state.services.report, case_id, service, focus_qs
         );
         let data = get_json(&state.http_client, &url).await?;
         return Ok(ApiResponse::success(data).into_response());
     }
 
     let url = format!(
-        "{}/report/{}/service/{}/{}",
-        state.services.report, case_id, service, fmt
+        "{}/report/{}/service/{}/{}{}",
+        state.services.report, case_id, service, fmt, focus_qs
     );
     let (content_type, disposition, bytes) = fetch_bytes(&state.http_client, &url).await?;
     let mut builder = Response::builder()

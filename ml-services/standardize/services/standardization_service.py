@@ -101,6 +101,14 @@ class StandardizationService:
                 continue
             data[model_field] = row.get(source_col)
 
+        # Wrapped-narration spillover from the OCR/table extractor (a
+        # continuation row that had no identifiable narration column). Append
+        # it so a multi-line narration is never silently truncated.
+        overflow = row.get("_narration_overflow")
+        if overflow:
+            base = data.get("narration") or ""
+            data["narration"] = (f"{base} {overflow}".strip()) if base else overflow
+
         # Normalize numeric fields BEFORE constructing the float-typed model,
         # so values like "5,389.38Cr" / "(500.00)" / "₹1,200" become floats
         # instead of crashing pydantic. Balance keeps its sign (Dr/overdraft).

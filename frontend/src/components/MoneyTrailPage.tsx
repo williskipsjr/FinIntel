@@ -184,6 +184,16 @@ export default function MoneyTrailPage() {
         {/* Per-service report export (scoped to the statement being traced) */}
         <ServiceReportButtons caseId={selectedStmtId || caseId} service="money-trail" />
 
+        {/* Selective export: just the currently-selected credit's debit trail */}
+        {selectedTxId && trailData && (
+          <ServiceReportButtons
+            caseId={selectedStmtId || caseId}
+            service="money-trail"
+            focus={selectedTxId}
+            label="Export selected trail"
+          />
+        )}
+
         {/* Custom Statement Selector Dropdown */}
         {completedStatements.length > 0 && (
           <div className={`relative shrink-0 ${isStmtDropdownOpen ? 'z-50' : 'z-30'}`}>

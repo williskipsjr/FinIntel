@@ -108,3 +108,15 @@ body {
 .workspace-root ::-webkit-scrollbar-thumb:hover {
   background: #D4D4D8;
 }
+
+/* Hide the scrollbar for horizontally-scrollable strips (e.g. the top nav on
+   crowded/zoomed viewports) while keeping them scrollable. */
+.no-scrollbar {
+  -ms-overflow-style: none;   /* IE / old Edge */
+  scrollbar-width: none;      /* Firefox */
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;              /* Chrome / Safari / Edge */
+  width: 0;
+  height: 0;
+}

@@ -53,6 +53,24 @@ _BANK_CODES = {
     "UBIN", "MAHB", "IDFB", "INDB", "FINO", "IPOS", "AIRP", "ESFB", "UJVN",
     "JAKA", "DCBL", "RATN", "FDRL", "SIBL", "KVBL", "KKBK", "IOBA", "PYTM",
 }
+# Generic business-entity descriptor words. On their own they don't identify
+# WHICH company sent/received money — dozens of unrelated firms are all
+# "... Enterprises" or "... Private Limited" — so letting the "longest token"
+# heuristic pick one of these (it usually IS the longest word in the
+# narration) wrongly merges unrelated businesses into one shared node. Same
+# false-round-trip / false-accumulation risk as the CASH node, just via a
+# different word.
+_GENERIC_ENTITY_WORDS = {
+    "ENTERPRISE", "ENTERPRISES", "INDUSTRY", "INDUSTRIES", "PRIVATE", "PVT",
+    "COMPANY", "CORP", "CORPORATION", "GROUP", "TRADERS", "TRADING",
+    "ASSOCIATES", "VENTURES", "SOLUTIONS", "SERVICES", "SERVICE", "INC",
+    "LLP", "FIRM", "STORES", "STORE", "HOUSE", "MART", "AGENCY", "AGENCIES",
+    "EXPORTS", "IMPORTS", "INTERNATIONAL", "GLOBAL", "HOLDINGS",
+    "CONSULTANCY", "CONSULTANTS", "INFOTECH", "TECHNOLOGIES", "TECHNOLOGY",
+    "SYSTEMS", "PROJECTS", "PROJECT", "CONSTRUCTION", "CONSTRUCTIONS",
+    "MARKETING", "SUPPLIERS", "SUPPLY", "DISTRIBUTORS", "DISTRIBUTION",
+    "AUTOMOBILES", "MOTORS", "TEXTILES", "FOODS", "ENGINEERING", "WORKS",
+}
 
 
 def _beneficiary_token(narration_upper: str):
@@ -60,7 +78,15 @@ def _beneficiary_token(narration_upper: str):
         t for t in _ALPHA_TOKEN.findall(narration_upper)
         if t not in _CP_STOPWORDS and t not in _BANK_CODES
     ]
-    return max(cands, key=len) if cands else None
+    specific = [t for t in cands if t not in _GENERIC_ENTITY_WORDS]
+    if specific:
+        return max(specific, key=len)
+    # Every candidate was a generic descriptor (e.g. "PAYMENT TO ENTERPRISES"
+    # with no distinguishing name left). Don't guess: returning None leaves
+    # the transaction unresolved (UI falls back to the raw narration text)
+    # instead of silently bucketing it under a generic node shared by
+    # unrelated businesses.
+    return None
 
 
 def _to_float(v):
@@ -91,7 +117,8 @@ def resolve_counterparty(narration: str):
     cd = _CD_TOKEN.search(narr)
     if cd:
         tok = cd.group(1).upper()
-        if tok not in _CP_STOPWORDS and tok not in _BANK_CODES:
+        if (tok not in _CP_STOPWORDS and tok not in _BANK_CODES
+                and tok not in _GENERIC_ENTITY_WORDS):
             return tok
     # last resort: the most distinctive name token in the narration
     return _beneficiary_token(up)
@@ -102,6 +129,13 @@ def _classify(node_id: str) -> str:
         return "UPI_ID"
     if node_id == "CASH":
         return "CASH"
+    if node_id in _MERCHANTS:
+        # A known payment-processor/merchant keyword match (Paytm, PhonePe,
+        # Jio, Airtel, ...) is a many-to-one pooled bucket just like CASH —
+        # every transaction that mentions it collapses into this one node
+        # regardless of which real recipient it actually went to, so it
+        # carries the same false-round-trip risk as CASH.
+        return "MERCHANT"
     digits = re.sub(r"\D", "", node_id)
     if digits and len(digits) >= 6 and digits == node_id:
         return "ACCOUNT"
@@ -136,7 +170,8 @@ class MoneyFlowEngine:
             if src is None and dst is None:
                 self.unresolved += 1
             return
-        self._add_edge(src, dst, amount, txn.get("date"), channel_of(txn))
+        self._add_edge(src, dst, amount, txn.get("date"), channel_of(txn),
+                       narration=txn.get("narration"), time=txn.get("time"))
         # investigator detail: statement-holder identity + activity window
         holder_id = str(txn.get("account") or holder or "SELF").strip()
         self._set_identity(holder_id, txn)
@@ -199,7 +234,13 @@ class MoneyFlowEngine:
                 "first_seen": None, "last_seen": None,
             }
 
-    def _add_edge(self, src, dst, amount, date, channel="Other"):
+    # cap on real narration samples kept per edge — just enough to quote as
+    # evidence in an explanation, not a full transaction log (that stays in
+    # the DB / trail service).
+    _MAX_EDGE_SAMPLES = 3
+
+    def _add_edge(self, src, dst, amount, date, channel="Other",
+                  narration=None, time=None):
         self._ensure_node(src)
         self._ensure_node(dst)
         key = (src, dst)
@@ -208,13 +249,22 @@ class MoneyFlowEngine:
             e = self.edges[key] = {
                 "source": src, "target": dst, "total_amount": 0.0,
                 "txn_count": 0, "first_date": date, "last_date": date,
-                "channels": {},
+                "channels": {}, "sample_narrations": [],
             }
         e["total_amount"] = round(e["total_amount"] + amount, 2)
         e["txn_count"] += 1
         e["channels"][channel] = e["channels"].get(channel, 0) + 1
         # dominant channel (most transactions on this route)
         e["channel"] = max(e["channels"].items(), key=lambda kv: kv[1])[0]
+        if narration and len(e["sample_narrations"]) < self._MAX_EDGE_SAMPLES:
+            narration = str(narration).strip()
+            if narration and not any(
+                s["narration"] == narration for s in e["sample_narrations"]
+            ):
+                e["sample_narrations"].append({
+                    "narration": narration, "date": date, "time": time,
+                    "amount": amount, "channel": channel,
+                })
         if date:
             if not e["first_date"] or str(date) < str(e["first_date"]):
                 e["first_date"] = date

@@ -27,7 +27,11 @@ def _conn():
 
 _BASE = """
 SELECT
-    COALESCE(s.account_number, 'STMT:' || t.statement_id::text) AS account,
+    COALESCE(
+        NULLIF(s.account_number, ''),
+        substring(s.filename from '\\d{6,}'),   -- account no embedded in the file name
+        'STMT:' || t.statement_id::text
+    ) AS account,
     s.account_holder,
     s.bank_name AS holder_bank,
     s.ifsc_code,
@@ -83,12 +87,16 @@ class PostgresLoader:
         )
 
     def load_account_transactions(self, account):
+        # Match the account whether it came from the account_number column, the
+        # account number embedded in the file name, or a sender/receiver field —
+        # so a node labelled by its file-name account number still resolves.
         return _rows(
             _BASE + """ AND (s.account_number = %s
+                            OR substring(s.filename from '\\d{6,}') = %s
                             OR t.sender_account = %s
                             OR t.receiver_account = %s)
                        ORDER BY t.date NULLS LAST, t.time NULLS LAST, t.created_at""",
-            [account, account, account],
+            [account, account, account, account],
         )
 
     def all_statement_ids(self):

@@ -20,18 +20,28 @@ export function downloadReport(caseId: string, format: "pdf" | "excel" | "docx",
 
 export type ServiceReport = "round-trips" | "money-flow" | "money-trail";
 
-/** Download a per-service investigation report (scoped to caseId). */
+/**
+ * Download a per-service investigation report (scoped to caseId).
+ * `focus` enables selective export: a credit transaction id (money-trail) or a
+ * round-trip chain id (round-trips) exports just that single item.
+ */
 export function downloadServiceReport(
   caseId: string,
   service: ServiceReport,
-  format: "pdf" | "excel" | "docx"
+  format: "pdf" | "excel" | "docx",
+  focus?: string | number
 ) {
   const baseUrl = getApiBaseUrl();
-  const url = `${baseUrl}/api/v1/reports/${caseId}/service/${service}/${format}`;
+  const focusQs =
+    focus !== undefined && focus !== null && `${focus}` !== ""
+      ? `?focus=${encodeURIComponent(String(focus))}`
+      : "";
+  const url = `${baseUrl}/api/v1/reports/${caseId}/service/${service}/${format}${focusQs}`;
   const ext = format === "excel" ? "xlsx" : format;
+  const selected = focusQs ? "_selected" : "";
   const a = document.createElement("a");
   a.href = url;
-  a.download = `${service.replace("-", "_")}_report_${caseId}.${ext}`;
+  a.download = `${service.replace("-", "_")}${selected}_report_${caseId}.${ext}`;
   a.target = "_blank";
   document.body.appendChild(a);
   a.click();

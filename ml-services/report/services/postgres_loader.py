@@ -103,6 +103,17 @@ class PostgresLoader:
             [limit],
         )
 
+    def statement_identities(self):
+        """Per-statement human-friendly identifiers so the report can show an
+        account number / file name instead of an opaque statement UUID."""
+        return _all(
+            """
+            SELECT id::text AS id, filename, account_number,
+                   account_holder, bank_name
+            FROM statements
+            """
+        )
+
     def transactions_full(self, statement_id):
         """Full ledger detail for a statement's transactions, keyed for the
         money-trail bank report (date, time, narration, reference, dr/cr, balance)."""
@@ -129,6 +140,28 @@ class PostgresLoader:
             """
         )
         return [r["sid"] for r in rows if r.get("sid")]
+
+    def transactions_for_analytics(self, statement_id=None):
+        """Lightweight per-transaction rows for channel / category / velocity
+        analytics: narration, txn_type, platform, direction, amount, date,
+        failed flag. Whole-network when statement_id is None."""
+        clauses = ["(t.is_duplicate = false OR t.is_duplicate IS NULL)"]
+        params = []
+        if statement_id:
+            clauses.append("t.statement_id = %s::uuid")
+            params.append(statement_id)
+        where = " AND ".join(clauses)
+        return _all(
+            f"""
+            SELECT t.date::text AS date, t.narration, t.txn_type, t.platform,
+                   t.debit_credit, t.amount::float8 AS amount,
+                   COALESCE(t.is_failed, false) AS is_failed
+            FROM transactions t
+            WHERE {where}
+            ORDER BY t.date NULLS LAST
+            """,
+            params,
+        )
 
     def cash_transactions(self, statement_id=None, limit=200):
         """ATM / cash-marked transactions (narration + amount + date/time) so the

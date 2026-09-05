@@ -93,10 +93,10 @@ export default function WorkspaceLayout() {
     <div className="workspace-root min-h-screen bg-[#FAFAFA] flex flex-col font-sans select-none antialiased text-[#18181B]">
       
       {/* Pristine Modern Top Header Navigation Bar (Stripe/Vercel Aesthetic) */}
-      <nav className="h-14 bg-white border-b border-[#E4E4E7] px-6 flex items-center justify-between sticky top-0 z-50 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
-        
+      <nav className="h-14 bg-white border-b border-[#E4E4E7] px-6 flex items-center justify-between gap-3 sticky top-0 z-50 shadow-[0_1px_2px_rgba(0,0,0,0.02)]">
+
         {/* Brand identity */}
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5 shrink-0">
           <div className="w-7 h-7 bg-zinc-950 rounded-md flex items-center justify-center text-[#FAFAFA] shrink-0 shadow-xs border border-zinc-800">
             <Layers className="w-3.5 h-3.5" />
           </div>
@@ -106,17 +106,20 @@ export default function WorkspaceLayout() {
           </div>
         </div>
 
-        {/* Clean horizontal nav links */}
-        <div className="hidden md:flex items-center gap-1">
+        {/* Clean horizontal nav links — ALWAYS visible on top (every width /
+            zoom / display-scale). The strip scrolls horizontally instead of
+            being clipped or dropping off the header when space is tight, so the
+            service tabs never disappear. */}
+        <div className="flex items-center gap-1 min-w-0 overflow-x-auto no-scrollbar">
           {navItems.map((item) => {
             const isActive = getIsActive(item.path);
             return (
               <button
                 key={item.id}
                 onClick={() => navigate(item.path)}
-                className={`px-4 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer ${
-                  isActive 
-                    ? 'bg-[#18181B] text-white font-semibold' 
+                className={`px-4 py-1.5 rounded-md text-xs font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                  isActive
+                    ? 'bg-[#18181B] text-white font-semibold'
                     : 'text-[#52525B] hover:text-[#18181B] hover:bg-[#F4F4F5]'
                 }`}
               >
@@ -127,7 +130,7 @@ export default function WorkspaceLayout() {
         </div>
 
         {/* User Identity Pill & Security Badge / Sign Out */}
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 shrink-0">
           {/* Alert bell (reuses the nav-pill + pulse language) */}
           <div className="relative">
             {isAlertsOpen && <div className="fixed inset-0 z-40" onClick={() => setIsAlertsOpen(false)} />}
@@ -203,26 +206,6 @@ export default function WorkspaceLayout() {
           </div>
         </div>
       </nav>
-
-      {/* Mobile-only visible sub-navigation rail to ensure 100% responsiveness */}
-      <div className="md:hidden flex items-center justify-around bg-white border-b border-[#E4E4E7] py-2 px-2 overflow-x-auto gap-2">
-        {navItems.map((item) => {
-          const isActive = getIsActive(item.path);
-          return (
-            <button
-              key={item.id}
-              onClick={() => navigate(item.path)}
-              className={`px-3 py-1 rounded text-xs whitespace-nowrap font-medium transition-all ${
-                isActive 
-                  ? 'bg-[#18181B] text-white font-semibold' 
-                  : 'text-[#52525B] hover:text-[#18181B]'
-              }`}
-            >
-              {item.label}
-            </button>
-          );
-        })}
-      </div>
 
       {/* Content Area Rendering the Selected Workspace Module */}
       <main className="flex-1 flex flex-col overflow-hidden relative">

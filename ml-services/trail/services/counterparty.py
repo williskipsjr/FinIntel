@@ -32,6 +32,21 @@ _BANK_CODES = {
     "UBIN", "MAHB", "IDFB", "INDB", "FINO", "IPOS", "AIRP", "ESFB", "UJVN",
     "JAKA", "DCBL", "RATN", "FDRL", "SIBL", "KVBL", "KKBK", "IOBA", "PYTM",
 }
+# Generic business-entity descriptor words (mirrors the graph engine) — on
+# their own they don't identify WHICH company this was, so the "longest
+# token" heuristic must not pick one as the destination name (it usually IS
+# the longest word in the narration, e.g. "... Enterprises Private Limited").
+_GENERIC_ENTITY_WORDS = {
+    "ENTERPRISE", "ENTERPRISES", "INDUSTRY", "INDUSTRIES", "PRIVATE", "PVT",
+    "COMPANY", "CORP", "CORPORATION", "GROUP", "TRADERS", "TRADING",
+    "ASSOCIATES", "VENTURES", "SOLUTIONS", "SERVICES", "SERVICE", "INC",
+    "LLP", "FIRM", "STORES", "STORE", "HOUSE", "MART", "AGENCY", "AGENCIES",
+    "EXPORTS", "IMPORTS", "INTERNATIONAL", "GLOBAL", "HOLDINGS",
+    "CONSULTANCY", "CONSULTANTS", "INFOTECH", "TECHNOLOGIES", "TECHNOLOGY",
+    "SYSTEMS", "PROJECTS", "PROJECT", "CONSTRUCTION", "CONSTRUCTIONS",
+    "MARKETING", "SUPPLIERS", "SUPPLY", "DISTRIBUTORS", "DISTRIBUTION",
+    "AUTOMOBILES", "MOTORS", "TEXTILES", "FOODS", "ENGINEERING", "WORKS",
+}
 
 
 def _beneficiary_token(narration_upper: str):
@@ -39,7 +54,14 @@ def _beneficiary_token(narration_upper: str):
         t for t in _ALPHA_TOKEN.findall(narration_upper)
         if t not in _CP_STOPWORDS and t not in _BANK_CODES
     ]
-    return max(cands, key=len) if cands else None
+    specific = [t for t in cands if t not in _GENERIC_ENTITY_WORDS]
+    if specific:
+        return max(specific, key=len)
+    # Every candidate was a generic descriptor -- don't guess. Returning None
+    # here makes the caller fall back to the raw narration text (see module
+    # docstring), which is more useful to an investigator than a generic
+    # bucket name shared by unrelated businesses.
+    return None
 
 
 def resolve(narration: str):
@@ -61,7 +83,8 @@ def resolve(narration: str):
     cd = _CD_TOKEN.search(narr)
     if cd:
         tok = cd.group(1).upper()
-        if tok not in _CP_STOPWORDS and tok not in _BANK_CODES:
+        if (tok not in _CP_STOPWORDS and tok not in _BANK_CODES
+                and tok not in _GENERIC_ENTITY_WORDS):
             return tok
     # last resort: the most distinctive name token in the narration
     return _beneficiary_token(up)

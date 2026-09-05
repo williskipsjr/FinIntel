@@ -156,6 +156,16 @@ export default function RoundTripsPage({ onNavigateToView }: { onNavigateToView?
         {/* Per-service report export */}
         <ServiceReportButtons caseId={caseId} service="round-trips" />
 
+        {/* Selective export: just the currently-selected round-trip chain */}
+        {currentTrip && currentTrip.id !== undefined && (
+          <ServiceReportButtons
+            caseId={caseId}
+            service="round-trips"
+            focus={currentTrip.id}
+            label="Export selected chain"
+          />
+        )}
+
         {/* Amount range filter */}
         <AmountRangeFilter value={amountRange} onChange={setAmountRange} />
 

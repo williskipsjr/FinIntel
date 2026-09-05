@@ -104,11 +104,34 @@ class TextStatementReconstructor:
                     rows.append(row)
                 narration_buffer = []
             else:
-                # potential narration continuation (only once table has started)
+                # A line with neither a date nor a money token is narration.
+                # Attribution is ambiguous from text alone, so we use the
+                # dominant Indian-bank layout: narration WRAPS BELOW its
+                # amount row, i.e. it belongs to the PREVIOUS (already-emitted)
+                # transaction. Before the first anchor there is no previous
+                # row, so such lines are buffered as the lead-in for the first
+                # transaction. Each line is attributed to exactly ONE
+                # transaction (no double counting).
                 if in_table and not _BALANCE_HINT.search(ln):
-                    narration_buffer.append(ln)
+                    if rows:
+                        self._append_tail(rows[-1], ln.strip())
+                    else:
+                        narration_buffer.append(ln)
 
         return rows
+
+    @staticmethod
+    def _append_tail(row: dict, extra: str):
+        """Append a wrapped continuation line to a row's narration, once."""
+        if not extra:
+            return
+        base = row.get("narration") or ""
+        if extra not in base:
+            row["narration"] = (f"{base} {extra}".strip()) if base else extra
+            # a longer narration may expose a better reference number
+            new_ref = TextStatementReconstructor._extract_ref(row["narration"])
+            if new_ref and not row.get("ref_no"):
+                row["ref_no"] = new_ref
 
     # ------------------------------------------------------------------ #
 

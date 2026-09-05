@@ -20,17 +20,32 @@ def detect_round_trips(engine, max_len: int = 6, max_results: int = 200,
     Uses the 'smallest node id is the entry point' rule to find each cycle
     exactly once and to prune the search (Johnson-style).
 
+    CASH and MERCHANT nodes are excluded from cycle search entirely. Both are
+    pooled, untraceable sinks: CASH is shared by every ATM/cash narration
+    across every account, and MERCHANT (Paytm/PhonePe/Jio/Airtel/... keyword
+    matches) is shared by every transaction that mentions that keyword,
+    regardless of which real recipient it actually went to. A path like
+    STMT:A -> CASH -> STMT:A or STMT:A -> JIO -> STMT:A is almost always two
+    unrelated events that happen to share the same pooled node, not a real
+    round-trip — there's no way to prove the money that left is the same
+    money that came back. These nodes still appear normally everywhere else
+    (the money-flow graph, accumulation/source summaries) — they just can
+    never close a "round trip" loop.
+
     To keep the MOST SIGNIFICANT cycles when the graph has many, we scan up to
     `scan_limit` cycles, then sort by bottleneck amount (desc) and keep the top
     `max_results`. This avoids returning an arbitrary DFS-order subset when the
     cap is hit. `scan_limit` bounds worst-case work on dense graphs.
     """
     out = engine.out_adj
-    order = {nid: i for i, nid in enumerate(sorted(engine.nodes))}
+    _POOLED_TYPES = ("CASH", "MERCHANT")
+    eligible = {nid for nid, n in engine.nodes.items()
+                if n.get("type") not in _POOLED_TYPES}
+    order = {nid: i for i, nid in enumerate(sorted(eligible))}
     results = []
     capped = False
 
-    for start in sorted(engine.nodes):
+    for start in sorted(eligible):
         if len(results) >= scan_limit:
             capped = True
             break
@@ -39,6 +54,8 @@ def detect_round_trips(engine, max_len: int = 6, max_results: int = 200,
         while stack:
             node, path = stack.pop()
             for nxt in out.get(node, ()):
+                if nxt not in eligible:
+                    continue
                 if order[nxt] < s_rank:
                     continue
                 if nxt == start and len(path) >= 2:

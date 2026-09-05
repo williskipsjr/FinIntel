@@ -74,15 +74,20 @@ def report_docx(case_id: str, refresh: bool = False):
 
 
 @app.get("/report/{case_id}/service/{service}/{fmt}")
-def service_report(case_id: str, service: str, fmt: str):
+def service_report(case_id: str, service: str, fmt: str, focus: Optional[str] = None):
     """Per-service investigation report (round-trips | money-flow | money-trail)
-    in json / pdf / excel / docx, scoped to a statement or the whole network."""
+    in json / pdf / excel / docx, scoped to a statement or the whole network.
+
+    `focus` enables selective export: a credit transaction id (money-trail) or a
+    round-trip chain id (round-trips) exports just that single item."""
     if service not in service_reports.SERVICES:
         return JSONResponse(status_code=404,
                             content={"error": f"unknown service '{service}'"})
-    doc = service_reports.build_service_doc(service, case_id)
+    doc = service_reports.build_service_doc(service, case_id, focus=focus)
     fmt = (fmt or "json").lower()
     tag = service.replace("-", "_")
+    if focus:
+        tag = f"{tag}_selected"
 
     if fmt == "json":
         return JSONResponse(doc)

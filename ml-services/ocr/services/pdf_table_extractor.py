@@ -81,6 +81,39 @@ class PdfTableExtractor:
             out[key] = val if val != "" else None
         return out
 
+    def _narration_key(self, header: list) -> Optional[str]:
+        """The dict key of the narration/description column, if the table has
+        one — used to append wrapped continuation lines to the right field."""
+        for i, h in enumerate(header):
+            if _norm(h) in _NARR_HDR:
+                return _clean(h) or f"col_{i}"
+        return None
+
+    def _is_continuation_row(self, row: list) -> bool:
+        """A row that belongs to the PREVIOUS transaction: it carries text but
+        no date and no money token (pdfplumber commonly emits the wrapped tail
+        of a long narration, or a second UTR/UPI-ref line, as its own row).
+        These used to be dropped by `_is_data_row`, truncating the narration."""
+        cells = [_clean(c) for c in row]
+        text = " ".join(c for c in cells if c)
+        if not text:
+            return False
+        return not (_DATE_VAL.search(text) or _MONEY_VAL.search(text))
+
+    def _merge_continuation(self, target: dict, row: list, narr_key: Optional[str]):
+        """Fold a continuation row's text into the previous transaction dict —
+        into its narration column when known, else a spillover field. Raw
+        transaction values are never modified; we only append narration text."""
+        extra = " ".join(_clean(c) for c in row if _clean(c)).strip()
+        if not extra:
+            return
+        if narr_key and narr_key in target:
+            base = target.get(narr_key) or ""
+            target[narr_key] = (f"{base} {extra}".strip()) if base else extra
+        else:
+            base = target.get("_narration_overflow") or ""
+            target["_narration_overflow"] = (f"{base} {extra}".strip()) if base else extra
+
     def process_table(self, table: list, carry_header: Optional[list]):
         """
         Process one table. Returns (rows, header_to_carry).
@@ -107,13 +140,17 @@ class PdfTableExtractor:
             return rows, carry_header  # not a transaction table
 
         norm_header = [_norm(c) for c in header]
+        narr_key = self._narration_key(header)
         ncols = len(header)
         for r in data_rows:
             if self._is_header_repeat(r, norm_header):
                 continue
-            if not self._is_data_row(r, ncols):
-                continue
-            rows.append(self._row_to_dict(header, r))
+            if self._is_data_row(r, ncols):
+                rows.append(self._row_to_dict(header, r))
+            elif rows and self._is_continuation_row(r):
+                # wrapped narration / extra ref line for the transaction above
+                self._merge_continuation(rows[-1], r, narr_key)
+            # else: genuine blank/noise row -> skip
 
         return rows, header
 

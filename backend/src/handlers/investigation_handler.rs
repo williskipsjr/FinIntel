@@ -214,14 +214,21 @@ pub async fn entity_explanation(
 }
 
 /// GET /api/v1/investigations/{case_id}/round-trips/{chain_id}/explanation
+///
+/// `chain_id` is only stable within the scope it was listed in (see
+/// `round_trips` above), so the explanation must be rebuilt from the SAME
+/// scope — forwarding `case_id` here (previously dropped) is what makes
+/// chain_id 0..N in a single-statement view resolve to that statement's own
+/// cycle #N instead of an unrelated whole-network cycle #N.
 pub async fn round_trip_explanation(
     State(state): State<AppState>,
-    Path((_case_id, chain_id)): Path<(String, String)>,
+    Path((case_id, chain_id)): Path<(String, String)>,
 ) -> ApiResult<Value> {
     let url = format!(
-        "{}/explain/round-trip/{}",
+        "{}/explain/round-trip/{}?case_id={}",
         state.services.graph,
-        enc(&chain_id)
+        enc(&chain_id),
+        enc(&case_id)
     );
     Ok(ApiResponse::success(get_json(&state.http_client, &url).await?))
 }

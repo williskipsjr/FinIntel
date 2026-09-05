@@ -99,36 +99,71 @@ def _severity(amount):
     return "LOW"
 
 
+def _display(node_id, engine):
+    """Human-readable label for a node: holder name when known, else raw id."""
+    n = (engine.nodes if engine else {}).get(node_id, {})
+    name = n.get("holder_name")
+    return f"{name} ({node_id})" if name else node_id
+
+
+def _hop_evidence(src, dst, engine):
+    e = engine.edges.get((src, dst), {}) if engine else {}
+    return {
+        "from": src,
+        "to": dst,
+        "amount": e.get("total_amount"),
+        "txn_count": e.get("txn_count"),
+        "channel": e.get("channel"),
+        "first_date": e.get("first_date"),
+        "last_date": e.get("last_date"),
+        "sample_narrations": e.get("sample_narrations", []),
+    }
+
+
+def _hop_line(hop, engine):
+    line = (
+        f"{_display(hop['from'], engine)} → {_display(hop['to'], engine)}: "
+        f"{_money(hop['amount'])} across {hop.get('txn_count') or 0} txn(s)"
+        + (f" via {hop['channel']}" if hop.get("channel") else "")
+    )
+    samples = hop.get("sample_narrations") or []
+    if samples:
+        quote = samples[0]["narration"]
+        if len(quote) > 90:
+            quote = quote[:87] + "..."
+        line += f' — e.g. "{quote}"'
+    return line
+
+
 def explain_round_trip(cycle, engine):
     nodes = cycle["nodes"]
-    hops = []
-    for i in range(len(nodes)):
-        src, dst = nodes[i], nodes[(i + 1) % len(nodes)]
-        e = engine.edges.get((src, dst), {})
-        hops.append({
-            "from": src,
-            "to": dst,
-            "amount": e.get("total_amount"),
-            "txn_count": e.get("txn_count"),
-        })
+    hops = [_hop_evidence(nodes[i], nodes[(i + 1) % len(nodes)], engine)
+            for i in range(len(nodes))]
 
-    path_str = " → ".join(nodes + [nodes[0]])
+    path_str = " → ".join(_display(n, engine) for n in nodes + [nodes[0]])
     bottleneck = cycle["min_amount"]
     severity = _severity(bottleneck)
 
     narrative = (
         f"Circular money movement across {len(nodes)} account(s): {path_str}. "
-        f"Funds leave {nodes[0]} and return to it, forming a closed loop. "
+        f"Funds leave {_display(nodes[0], engine)} and return to it after "
+        f"{len(nodes)} hop(s), forming a closed loop. "
         f"The smallest hop is {_money(bottleneck)}, so at least {_money(bottleneck)} "
         f"can circulate through the entire loop (total moved across hops: "
         f"{_money(cycle['total_amount'])})."
     )
+    hop_lines = [_hop_line(h, engine) for h in hops]
+    if hop_lines:
+        narrative += " Hop-by-hop: " + " | ".join(hop_lines)
 
     why = [
         "Money returns to its origin account (closed loop) — a classic "
         "layering / round-tripping indicator.",
         f"Loop length {len(nodes)} with a sustained bottleneck of {_money(bottleneck)}.",
     ]
+    why.extend(
+        f"Hop {i + 1}: {_hop_line(h, engine)}" for i, h in enumerate(hops)
+    )
 
     return {
         "chain_id": cycle.get("id"),

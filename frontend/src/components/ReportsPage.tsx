@@ -28,6 +28,7 @@ import {
   getTopSuspicious,
   emailReport
 } from '../services/finintelApi';
+import { ChannelDonut, ChannelBars, VelocityChart } from './ReportCharts';
 import { downloadReport } from '../services/downloads';
 import { getSession } from '../services/auth';
 import { RiskBadges } from './RiskBadge';
@@ -716,6 +717,59 @@ export default function ReportsPage() {
             </div>
 
           </div>
+
+          {/* Payment channels & category breakdown — counts + visual charts */}
+          {(Array.isArray(reportJson?.channel_breakdown) && reportJson.channel_breakdown.length > 0) && (
+            <div className="space-y-4 font-sans">
+              <h2 className="text-xs font-bold text-[#18181B] uppercase tracking-wider border-b border-[#E4E4E7] pb-2 font-mono flex items-center gap-2">
+                <Layers className="w-3.5 h-3.5 text-[#2563EB]" /> Transaction Channels & Categories
+              </h2>
+
+              {/* Category headline tiles */}
+              {reportJson?.category_counts && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
+                  {([
+                    ['Total', 'total_transactions'],
+                    ['ATM Withdrawals', 'atm_withdrawals'],
+                    ['Cash Deposits', 'cash_deposits'],
+                    ['Failed / Reversed', 'failed_transactions'],
+                    ['Digital (UPI/apps)', 'digital_upi'],
+                    ['Cheque', 'cheque'],
+                  ] as [string, string][]).map(([label, key]) => (
+                    <div key={key} className="border border-[#E4E4E7] rounded-xl p-3 bg-white">
+                      <div className="text-[9px] uppercase font-bold text-[#71717A] font-mono">{label}</div>
+                      <div className="text-xl font-bold text-[#18181B] mt-1 font-display">
+                        {reportJson.category_counts[key] ?? 0}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Donut: share by channel */}
+                <div className="border border-[#E4E4E7] rounded-xl p-4 bg-white">
+                  <div className="text-[10px] uppercase font-bold text-[#71717A] font-mono mb-3">Share by Channel</div>
+                  <ChannelDonut data={reportJson.channel_breakdown} />
+                </div>
+                {/* Bars: class-wise counts (BLKRTGS / NEFT / Paytm / ...) */}
+                <div className="border border-[#E4E4E7] rounded-xl p-4 bg-white">
+                  <div className="text-[10px] uppercase font-bold text-[#71717A] font-mono mb-3">Class-wise Transaction Counts</div>
+                  <ChannelBars data={reportJson.channel_breakdown} />
+                </div>
+              </div>
+
+              {/* Fund velocity over time */}
+              {Array.isArray(reportJson?.activity_timeline) && reportJson.activity_timeline.length > 1 && (
+                <div className="border border-[#E4E4E7] rounded-xl p-4 bg-white">
+                  <div className="text-[10px] uppercase font-bold text-[#71717A] font-mono mb-2 flex items-center gap-1.5">
+                    <TrendingUp className="w-3 h-3 text-[#2563EB]" /> Fund Velocity Over Time
+                  </div>
+                  <VelocityChart data={reportJson.activity_timeline} />
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Cash Withdrawal / Deposit Locations — physical leads for officers */}
           {Array.isArray(reportJson?.cash_locations) && reportJson.cash_locations.length > 0 && (

@@ -1,18 +1,16 @@
 """
 Render the report data model to a PDF (Core Requirement 6, graded).
 
+Minimal, statistics-first and investigator-friendly. No charts — just the
+numbers (in the summary) plus the two explained sections (round trips and money
+flow). Every account identifier is already resolved to an account number / file
+name upstream in report_builder, so no opaque statement UUID appears here.
+
 Uses reportlab (pip install reportlab). Kept dependency-isolated: the import is
 inside build_pdf so the rest of the report service runs even if reportlab isn't
-installed yet (the endpoint then returns a clear error).
-
-Layout notes
-------------
-Every table is given explicit `colWidths` that sum to the frame width, and every
-cell is a wrapped Paragraph. This is what prevents the previous bug where long
-"Path"/"Patterns" strings expanded a column, pushed the whole table past the
-right margin, and clipped the content. Amounts use an ASCII "Rs" prefix with
-Indian digit grouping because the ₹ glyph (U+20B9) isn't in the base-14 PDF
-fonts and would render as a blank box.
+installed yet (the endpoint then returns a clear error). Amounts use an ASCII
+"Rs" prefix with Indian digit grouping because the Rupee glyph isn't in the
+base-14 PDF fonts.
 """
 
 import io
@@ -40,7 +38,25 @@ def _inr(value):
     return ("-" if negative else "") + "Rs " + s
 
 
-_MONEY_KEYS = {"total_credit", "total_debit"}
+KEY_METRICS = [
+    ("statements", "Statements"),
+    ("transactions", "Transactions"),
+    ("total_credit", "Total Credit"),
+    ("total_debit", "Total Debit"),
+    ("duplicates", "Duplicate Transactions"),
+    ("failed_or_reversed", "Failed / Reversed"),
+    ("round_trips_detected", "Round Trips Detected"),
+    ("high_risk_accounts", "High-Risk Accounts"),
+]
+_MONEY_METRICS = {"total_credit", "total_debit"}
+
+CATEGORY_LABELS = [
+    ("total_transactions", "Total Transactions"), ("credits", "Credits"),
+    ("debits", "Debits"), ("atm_withdrawals", "ATM Withdrawals"),
+    ("cash_deposits", "Cash Deposits"), ("failed_transactions", "Failed / Reversed"),
+    ("digital_upi", "Digital (UPI / apps)"), ("cheque", "Cheque"),
+    ("card_pos", "Card / POS"),
+]
 
 
 def build_pdf(report: dict) -> bytes:
@@ -58,9 +74,14 @@ def build_pdf(report: dict) -> bytes:
                                  spaceAfter=4)
     meta_style = ParagraphStyle("Meta", parent=styles["BodyText"], fontSize=9,
                                 textColor=colors.HexColor("#52525B"))
-    h2 = ParagraphStyle("H2c", parent=styles["Heading2"], fontSize=12,
-                        textColor=colors.HexColor("#1F4E78"), spaceBefore=6,
+    h2 = ParagraphStyle("H2c", parent=styles["Heading2"], fontSize=13,
+                        textColor=colors.HexColor("#1F4E78"), spaceBefore=8,
                         spaceAfter=4)
+    h3 = ParagraphStyle("H3c", parent=styles["Heading3"], fontSize=10.5,
+                        textColor=colors.HexColor("#1F4E78"), spaceBefore=6,
+                        spaceAfter=2)
+    note = ParagraphStyle("Note", parent=body, fontSize=8.5, leading=11,
+                          textColor=colors.HexColor("#3F3F46"))
     cell = ParagraphStyle("Cell", parent=body, fontSize=8, leading=10)
     cell_right = ParagraphStyle("CellR", parent=cell, alignment=2)  # right
     head_cell = ParagraphStyle("HeadCell", parent=cell, textColor=colors.white,
@@ -72,14 +93,13 @@ def build_pdf(report: dict) -> bytes:
         topMargin=16 * mm, bottomMargin=16 * mm,
         leftMargin=14 * mm, rightMargin=14 * mm,
     )
-    avail = doc.width  # usable frame width; colWidths always sum to this
+    avail = doc.width
     flow = []
 
     def P(text, style=cell):
         return Paragraph("" if text is None else str(text), style)
 
     def make_table(headers, rows, ratios, right_cols=()):
-        """Build a wrapped, page-fitting table. `ratios` = relative col widths."""
         total = float(sum(ratios)) or 1.0
         col_widths = [avail * (r / total) for r in ratios]
         data = [[P(h, head_cell) for h in headers]]
@@ -105,159 +125,158 @@ def build_pdf(report: dict) -> bytes:
 
     # ------------------------------------------------------------------ header
     flow.append(Paragraph(report.get("title", "Investigation Report"), title_style))
-    scope = report.get("scope") or f"Case: {report.get('case_id', 'all')}"
-    flow.append(Paragraph(scope, meta_style))
+    flow.append(Paragraph(report.get("scope") or f"Case: {report.get('case_id', 'all')}",
+                          meta_style))
     if report.get("generated_at"):
         flow.append(Paragraph(f"Generated: {report.get('generated_at')}", meta_style))
     flow.append(Spacer(1, 8))
 
-    # ---------------------------------------------------------- executive summary
-    flow.append(Paragraph("Executive Summary", h2))
-    es = report.get("executive_summary", {})
-    es_rows = [
-        [k.replace("_", " ").title(), _inr(v) if k in _MONEY_KEYS else v]
-        for k, v in es.items()
-    ]
-    flow.append(make_table(["Metric", "Value"], es_rows, [3, 2], right_cols=(1,)))
-    flow.append(Spacer(1, 8))
+    # ------------------------------------------------ Summary — key statistics
+    flow.append(Paragraph("Summary — Key Statistics", h2))
+    es = report.get("executive_summary", {}) or {}
+    flow.append(make_table(
+        ["Metric", "Value"],
+        [[lbl, _inr(es.get(key)) if key in _MONEY_METRICS else es.get(key, 0)]
+         for key, lbl in KEY_METRICS],
+        [3, 2], right_cols=(1,)))
+    flow.append(Spacer(1, 6))
 
-    # --------------------------------------------------- flagged findings (top)
-    flagged = report.get("flagged_findings", [])
-    flow.append(Paragraph("Malicious Activity — Flagged Findings", h2))
+    dist = report.get("risk_distribution") or {}
+    if any(dist.values()):
+        flow.append(Paragraph("Accounts by Risk Level", h3))
+        flow.append(make_table(
+            ["Critical", "High", "Medium", "Low"],
+            [[dist.get("CRITICAL", 0), dist.get("HIGH", 0),
+              dist.get("MEDIUM", 0), dist.get("LOW", 0)]],
+            [1, 1, 1, 1]))
+        flow.append(Spacer(1, 6))
+
+    cats = report.get("category_counts") or {}
+    if cats:
+        flow.append(Paragraph("Transaction Categories", h3))
+        flow.append(make_table(
+            ["Category", "Count"],
+            [[lbl, cats.get(key, 0)] for key, lbl in CATEGORY_LABELS],
+            [3, 1], right_cols=(1,)))
+        flow.append(Spacer(1, 6))
+
+    channels = report.get("channel_breakdown") or []
+    if channels:
+        flow.append(Paragraph("Payment Channels", h3))
+        flow.append(make_table(
+            ["Channel / Class", "Transactions", "Total Value", "Share"],
+            [[c.get("channel"), c.get("count"), _inr(c.get("value")),
+              f"{round((c.get('share') or 0) * 100)}%"] for c in channels],
+            [2.5, 1.5, 2.0, 1.0], right_cols=(1, 2, 3)))
+        flow.append(Spacer(1, 6))
+
+    # flagged findings live INSIDE the summary
+    flow.append(Paragraph("Flagged Findings", h3))
     flow.append(Paragraph(report.get("flags_summary", ""), body))
     flow.append(Spacer(1, 3))
+    flagged = report.get("flagged_findings", [])
     if flagged:
         flow.append(make_table(
             ["Account", "Severity", "Flags", "Evidence"],
             [[f.get("account"), f.get("severity"),
               ", ".join(f.get("tags", []) or []),
-              "; ".join(f.get("reasons", []) or [])]
-             for f in flagged[:20]],
-            [2.4, 1.1, 2.5, 4.0],
-        ))
-    flow.append(Spacer(1, 8))
-
-    # ------------------------------------------------------- risk distribution
-    dist = report.get("risk_distribution") or _risk_distribution(report.get("top_risks", []))
-    if dist:
-        flow.append(Paragraph("Risk Distribution", h2))
-        flow.append(make_table(
-            ["Critical", "High", "Medium", "Low"],
-            [[dist.get("CRITICAL", 0), dist.get("HIGH", 0),
-              dist.get("MEDIUM", 0), dist.get("LOW", 0)]],
-            [1, 1, 1, 1],
-        ))
-        flow.append(Spacer(1, 8))
-
-    # ------------------------------------------------------ data quality / validation
-    val = report.get("validation", {})
-    if val:
-        flow.append(Paragraph("Data Quality & Validation", h2))
-        avg_conf = val.get("average_confidence")
-        avg_conf_str = f"{round(avg_conf * 100, 1)}%" if isinstance(avg_conf, (int, float)) else "N/A"
-        flow.append(make_table(
-            ["Total", "Valid", "Duplicates", "Failed/Reversed", "Invalid", "Avg Confidence"],
-            [[val.get("total", 0), val.get("valid", "-"), val.get("duplicates", 0),
-              val.get("failed", 0), val.get("invalid", 0), avg_conf_str]],
-            [1, 1, 1.2, 1.4, 1, 1.4],
-        ))
-        flow.append(Spacer(1, 8))
-
-    # --------------------------------------------------------- top suspicious
-    flow.append(Paragraph("Top Suspicious Accounts", h2))
-    flow.append(make_table(
-        ["Account", "Score", "Level", "Flags", "Patterns"],
-        [[r.get("node") or r.get("account"), r.get("risk_score"), r.get("risk_level"),
-          ", ".join(t.get("label", "") for t in (r.get("tags") or [])),
-          "; ".join(r.get("patterns", []) or r.get("top_reasons", []) or [])]
-         for r in report.get("top_risks", [])[:15]],
-        [2.2, 0.8, 1.0, 2.6, 3.4], right_cols=(1,),
-    ))
+              "; ".join(f.get("reasons", []) or [])] for f in flagged],
+            [2.4, 1.1, 2.5, 4.0]))
     flow.append(Spacer(1, 8))
 
     # ------------------------------------------------------------- round trips
-    flow.append(Paragraph("Round-Trip / Circular Flows", h2))
-    rt_rows = [
-        [c.get("id"), " -> ".join(c.get("nodes", [])),
-         _inr(c.get("min_amount")), _inr(c.get("total_amount"))]
-        for c in report.get("round_trips", [])[:15]
-    ]
-    if rt_rows:
-        flow.append(make_table(
-            ["Chain", "Path", "Bottleneck", "Total"],
-            rt_rows, [0.7, 5.0, 1.6, 1.6], right_cols=(2, 3),
-        ))
+    flow.append(Paragraph("Round Trips (Circular Flows)", h2))
+    if report.get("round_trips_definition"):
+        flow.append(Paragraph(report["round_trips_definition"], note))
+        flow.append(Spacer(1, 4))
+    trips = report.get("round_trips", [])
+    if trips:
+        for i, c in enumerate(trips, start=1):
+            flow.append(Paragraph(f"Round Trip #{c.get('id', i)}", h3))
+            flow.append(Paragraph("<b>Path:</b> " + " &rarr; ".join(
+                str(n) for n in c.get("nodes", [])), body))
+            if c.get("description"):
+                flow.append(Paragraph(c["description"], note))
+            flow.append(Spacer(1, 4))
     else:
         flow.append(Paragraph("No circular flows detected in this scope.", body))
     flow.append(Spacer(1, 8))
 
     # -------------------------------------------------------------- money flow
     flow.append(Paragraph("Money Flow", h2))
+    defs = report.get("money_flow_definitions") or {}
+    if defs.get("overview"):
+        flow.append(Paragraph(defs["overview"], note))
     mf = report.get("money_flow", {})
     flow.append(Paragraph(
-        f"Primary destination (accumulation) account: "
+        "Primary destination (where funds accumulate): "
         f"<b>{mf.get('destination_account') or 'None identified'}</b>", body))
-    flow.append(Spacer(1, 3))
+    flow.append(Spacer(1, 4))
+
     acc = mf.get("accumulation_accounts", [])[:10]
     if acc:
+        flow.append(Paragraph("Accumulation Accounts", h3))
+        if defs.get("accumulation"):
+            flow.append(Paragraph(defs["accumulation"], note))
         flow.append(make_table(
-            ["Accumulation Account", "Total Received", "Senders"],
+            ["Account", "Total Received", "Senders"],
             [[a.get("node"), _inr(a.get("total_received")), a.get("sender_count")]
              for a in acc],
-            [4, 2.5, 1.5], right_cols=(1, 2),
-        ))
+            [4, 2.5, 1.5], right_cols=(1, 2)))
         flow.append(Spacer(1, 6))
+
+    src = mf.get("source_accounts", [])[:10]
+    if src:
+        flow.append(Paragraph("Source Accounts", h3))
+        if defs.get("source"):
+            flow.append(Paragraph(defs["source"], note))
+        flow.append(make_table(
+            ["Account", "Total Sent", "Receivers"],
+            [[a.get("node"), _inr(a.get("total_sent")), a.get("receiver_count")]
+             for a in src],
+            [4, 2.5, 1.5], right_cols=(1, 2)))
+        flow.append(Spacer(1, 6))
+
     lay = mf.get("layering", [])[:10]
     if lay:
-        flow.append(Paragraph("Layering / Pass-Through Accounts", h2))
+        flow.append(Paragraph("Layering / Pass-Through Accounts", h3))
+        if defs.get("layering"):
+            flow.append(Paragraph(defs["layering"], note))
         flow.append(make_table(
-            ["Account", "In", "Out", "Pass-Through"],
+            ["Account", "Total In", "Total Out", "Pass-Through"],
             [[a.get("node"), _inr(a.get("total_in")), _inr(a.get("total_out")),
-              f"{round((a.get('passthrough_ratio') or 0) * 100)}%"]
-             for a in lay],
-            [4, 2, 2, 1.6], right_cols=(1, 2, 3),
-        ))
+              f"{round((a.get('passthrough_ratio') or 0) * 100)}%"] for a in lay],
+            [4, 2, 2, 1.6], right_cols=(1, 2, 3)))
         flow.append(Spacer(1, 8))
 
-    # ------------------------------------------------------- cash locations
-    cash = report.get("cash_locations", [])[:30]
+    # --------------------------------------------- fund velocity (numbers only)
+    timeline = report.get("activity_timeline") or []
+    if timeline:
+        flow.append(Paragraph("Fund Velocity — Daily Activity", h2))
+        flow.append(make_table(
+            ["Date", "Transactions", "Credit", "Debit"],
+            [[t.get("date"), t.get("count"), _inr(t.get("credit")), _inr(t.get("debit"))]
+             for t in timeline],
+            [2.2, 1.6, 2.1, 2.1], right_cols=(1, 2, 3)))
+        flow.append(Spacer(1, 8))
+
+    # ------------------------------ cash withdrawal / deposit locations
+    cash = report.get("cash_locations") or []
     if cash:
         flow.append(Paragraph("Cash Withdrawal / Deposit Locations", h2))
+        flow.append(Paragraph(
+            "Physical ATM / branch locations where cash was withdrawn (debit) or "
+            "deposited (credit), parsed from the transaction narrations — the "
+            "on-ground leads for an officer.", note))
+        flow.append(Spacer(1, 3))
         flow.append(make_table(
-            ["City", "State", "Direction", "Amount", "Date / Time"],
-            [[c.get("city"), c.get("state"), c.get("direction"),
+            ["City", "State", "Type", "Amount", "Date / Time"],
+            [[c.get("city"), c.get("state"),
+              "Withdrawal" if c.get("direction") == "DEBIT" else "Deposit",
               _inr(c.get("amount")),
               f"{c.get('date') or ''} {c.get('time') or ''}".strip()]
              for c in cash],
-            [2.2, 2.4, 1.2, 1.6, 2.6], right_cols=(3,),
-        ))
-        flow.append(Spacer(1, 8))
-
-    # ---------------------------------------------------------------- entities
-    entities = report.get("top_entities", [])[:20]
-    if entities:
-        flow.append(Paragraph("Resolved Entities", h2))
-        flow.append(make_table(
-            ["Type", "Identifier", "Display Name"],
-            [[e.get("entity_type"), e.get("identifier"), e.get("display_name")]
-             for e in entities],
-            [1.6, 3.2, 3.2],
-        ))
-        flow.append(Spacer(1, 8))
-
-    # --------------------------------------------------------- recommendations
-    flow.append(Paragraph("Recommendations", h2))
-    for rec in report.get("recommendations", []):
-        flow.append(Paragraph(f"&bull; {rec}", body))
+            [2.2, 2.2, 1.4, 1.6, 2.6], right_cols=(3,)))
 
     doc.build(flow)
     return buf.getvalue()
-
-
-def _risk_distribution(top_risks):
-    dist = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
-    for r in top_risks or []:
-        level = r.get("risk_level")
-        if level in dist:
-            dist[level] += 1
-    return dist
